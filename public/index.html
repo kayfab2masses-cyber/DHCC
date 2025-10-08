@@ -23,9 +23,12 @@
         <label for="level">Level (1–10)</label>
         <input id="level" type="number" min="1" max="10" value="1" />
       </div>
-      <div>
+      <!-- The archetype selector has been removed from the UI at the user's request.
+           The generator will infer an appropriate role based on the chosen class,
+           or default to a sensible archetype internally.  We hide the original
+           archetype div to keep the layout consistent. -->
+      <div style="display:none;">
         <label for="archetype">Archetype</label>
-        <!-- Archetype is optional: the first blank option lets you omit it completely -->
         <select id="archetype">
           <option value="">— Any —</option>
           <option>Tank</option>
@@ -153,7 +156,6 @@
       // Generate button event
       document.querySelector('#generate').addEventListener('click', async () => {
         const level = document.querySelector('#level').value.trim() || '1';
-        const archetype = document.querySelector('#archetype').value.trim();
         const cls = classSelect.value.trim();
         const sub = subclassSelect.value.trim();
         const primary = document.querySelector('#primary').value.trim();
@@ -162,8 +164,7 @@
         // Build query parameters
         const params = new URLSearchParams();
         params.set('level', level);
-        // Only include archetype if non‑empty; otherwise API will infer
-        if (archetype) params.set('archetype', archetype);
+        // Archetype is no longer sent; the API will infer a default based on the class
         if (cls) params.set('class', cls);
         if (sub) params.set('subclass', sub);
         if (primary) params.set('primary', primary);
