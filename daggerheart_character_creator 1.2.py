@@ -85,6 +85,7 @@ import os
 import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+import copy
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -141,9 +142,31 @@ class Character:
     stress: int = 6
     hope: int = 2
     traits: Dict[str, int] = field(default_factory=dict)
+    # The base hit points and evasion as dictated by class.  These values
+    # remain constant even when equipment applies bonuses or penalties.  HP
+    # increases from advancements will modify ``base_hp``.
+    base_hp: int = 0
+    base_evasion: int = 0
+    # A copy of the unmodified trait assignments at level‑1.  Equipment may
+    # apply temporary bonuses or penalties to traits; to avoid stacking
+    # modifiers when switching items, we reset traits from this dict each
+    # time we (re)apply equipment.
+    base_traits: Dict[str, int] = field(default_factory=dict)
     heritage: Optional[Heritage] = None
     experiences: List[str] = field(default_factory=list)
+    # Mapping of equipment slots to item names.  Keys include
+    # ``primary``, ``secondary`` and ``armor``.
     equipment: Dict[str, str] = field(default_factory=dict)
+    # The calculated minor and major damage thresholds of the equipped
+    # armor.  These numbers include the character's level bonus.
+    armor_thresholds: Tuple[int, int] = (0, 0)
+    # The armor score of the equipped armor.  This number increases
+    # the character's protection when they mark Armor Slots.
+    armor_score: int = 0
+    # A convenience field storing the current damage roll expression
+    # for the equipped primary (and secondary) weapons.  Represented
+    # as a string like ``"1d8+3"``.
+    damage_roll: Optional[str] = None
     domain_cards: List[str] = field(default_factory=list)
     advancements_log: Dict[int, List[Advancement]] = field(default_factory=dict)
     subclass_upgrades: List[str] = field(default_factory=list)
@@ -291,20 +314,54 @@ def select_heritage() -> Heritage:
     return Heritage(ancestry_name, (feat1, feat2), community_name, feature)
 
 
-def assign_traits(archetype: str) -> Dict[str, int]:
-    """Assign trait modifiers based on the archetype.
+def assign_traits(archetype: str, *, class_name: Optional[str] = None,
+                  subclass: Optional[Subclass] = None) -> Dict[str, int]:
+    """Assign trait modifiers based on the archetype and class.
 
-    According to the SRD, characters begin with a fixed array of
-    modifiers [+2, +1, +1, 0, 0, -1] which are assigned to the six
-    traits【876238438073902†L1445-L1448】.  The order is determined by
-    the archetype's trait priority list.  This function returns a
-    dictionary mapping each trait to its modifier.
+    Characters begin with the fixed array of modifiers ``[+2, +1, +1, 0, 0, -1]``
+    which are assigned to the six traits.  By default, the order is
+    determined by the archetype's trait priority list【876238438073902†L1445-L1448】.  If a
+    ``class_name`` or ``subclass`` is provided, the primary trait used by
+    that class (typically the spellcast or attack trait) will receive the
+    highest bonus (+2).  The remaining modifiers are then assigned
+    according to the archetype's priorities, skipping the primary trait.
+
+    Parameters
+    ----------
+    archetype: str
+        The archetype guiding the general priority of traits.
+    class_name: Optional[str]
+        The name of the class, used to look up a default primary trait if
+        ``subclass`` is not provided.
+    subclass: Optional[Subclass]
+        A ``Subclass`` instance which specifies its ``spellcast_trait``. If
+        provided, this takes precedence over ``class_name`` when
+        determining the primary trait.
+
+    Returns
+    -------
+    Dict[str, int]
+        A mapping from trait names to their assigned modifiers.
     """
+    # Base modifiers as per the SRD: +2, +1, +1, 0, 0, -1
     base_mods = [2, 1, 1, 0, 0, -1]
-    order = TRAIT_PRIORITIES[archetype.title()]
-    traits = ['Agility', 'Strength', 'Finesse', 'Instinct', 'Presence', 'Knowledge']
-    # Create ordered list of trait names based on priority
-    ordered_traits = order
+    # Determine the primary trait from subclass or class
+    primary_trait: Optional[str] = None
+    if subclass is not None:
+        primary_trait = subclass.spellcast_trait
+    elif class_name is not None:
+        # Use a predefined mapping of classes to their primary traits
+        primary_trait = CLASS_PRIMARY_TRAIT.get(class_name)
+    # Ordered list based on archetype priorities
+    archetype_order = TRAIT_PRIORITIES[archetype.title()].copy()
+    ordered_traits: List[str] = []
+    # Place the primary trait first if defined
+    if primary_trait and primary_trait in archetype_order:
+        ordered_traits.append(primary_trait)
+        archetype_order.remove(primary_trait)
+    # Append the remaining traits following the archetype's order
+    ordered_traits.extend(archetype_order)
+    # Assign modifiers to traits in order
     values = dict(zip(ordered_traits, base_mods))
     return values
 
@@ -544,24 +601,50 @@ def create_character(level: int, archetype: str, *, class_name: Optional[str] = 
         raise ValueError('Level must be between 1 and 10')
     archetype_title = archetype.title()
     # Determine class and subclass
-    if class_name is None or subclass_name is None:
+    if class_name is None:
+        # No class specified: use archetype-driven random selection
         cls, subclass_info = choose_class_and_subclass(archetype_title)
     else:
+        # Class specified: respect the choice
         cls = class_name
-        subclass_info = SUBCLASSES[class_name][subclass_name]
+        if subclass_name is not None:
+            # Both class and subclass provided
+            subclass_info = SUBCLASSES[cls][subclass_name]
+        else:
+            # Only class provided: pick a subclass based on archetype preference
+            # If a preferred subclass is defined for this archetype/class pair, use it
+            pref_name = SUBCLASS_PREFERENCE.get((archetype_title, cls))
+            if pref_name and pref_name in SUBCLASSES[cls]:
+                subclass_info = SUBCLASSES[cls][pref_name]
+            else:
+                # Fallback to the first defined subclass for the class
+                first_sub = CLASSES[cls].subclasses[0]
+                subclass_info = SUBCLASSES[cls][first_sub]
     # Build character and assign basics
     ci = CLASSES[cls]
-    char = Character(archetype=archetype_title, char_class=ci.name,
-                     subclass=subclass_info.name, hp=ci.hp,
-                     evasion=ci.evasion)
+    char = Character(
+        archetype=archetype_title,
+        char_class=ci.name,
+        subclass=subclass_info.name,
+        hp=ci.hp,
+        evasion=ci.evasion,
+        base_hp=ci.hp,
+        base_evasion=ci.evasion,
+    )
     # Assign heritage
     char.heritage = select_heritage()
-    # Assign traits
-    char.traits = assign_traits(archetype_title)
+    # Assign traits, prioritising the class's primary trait if available
+    char.traits = assign_traits(archetype_title, class_name=cls, subclass=subclass_info)
+    # Record unmodified traits so that equipment modifiers can be applied and
+    # removed without accumulating errors.
+    char.base_traits = dict(char.traits)
     # Starting experiences
     char.experiences = generate_experiences(archetype_title, ci.name)
-    # Starting equipment
-    char.equipment = choose_equipment(archetype_title)
+    # Starting equipment: leave empty for canonical selection.  Equipment
+    # will be applied explicitly via API or UI, so we don't assign any
+    # items here.  The ``equipment`` dict remains empty until
+    # ``apply_equipment`` is called.
+    char.equipment = {}
     # Starting domain cards: two level 1 cards
     for _ in range(2):
         card = pick_domain_card(char, archetype_title, 1)
@@ -575,36 +658,312 @@ def create_character(level: int, archetype: str, *, class_name: Optional[str] = 
 
 
 # ---------------------------------------------------------------------------
+# Equipment definitions and application
+# ---------------------------------------------------------------------------
+
+# Tier 1 primary weapons.  Each entry defines the trait used to attack,
+# the base damage die (number of sides), a flat damage bonus, whether
+# the weapon is two‑handed (True) or one‑handed (False), any evasion
+# penalty or trait adjustments, and a short description of its feature.
+TIER1_PRIMARY_WEAPONS: Dict[str, Dict] = {
+    # Physical weapons
+    'Broadsword':  {
+        'trait': 'Agility', 'die': 8,  'flat': 0, 'two_handed': False,
+        'evasion_mod': 0, 'trait_mods': {}, 'feature': 'Reliable: +1 to attack rolls'
+    },
+    'Longsword':  {
+        'trait': 'Agility', 'die': 8,  'flat': 3, 'two_handed': True,
+        'evasion_mod': 0, 'trait_mods': {}, 'feature': ''
+    },
+    'Battleaxe':  {
+        'trait': 'Strength', 'die': 10, 'flat': 3, 'two_handed': True,
+        'evasion_mod': 0, 'trait_mods': {}, 'feature': ''
+    },
+    'Greatsword': {
+        'trait': 'Strength', 'die': 10, 'flat': 3, 'two_handed': True,
+        'evasion_mod': -1, 'trait_mods': {},
+        'feature': 'Massive: −1 Evasion; roll an extra damage die and drop the lowest on a success'
+    },
+    'Mace': {
+        'trait': 'Strength', 'die': 8,  'flat': 1, 'two_handed': False,
+        'evasion_mod': 0, 'trait_mods': {}, 'feature': ''
+    },
+    'Warhammer': {
+        'trait': 'Strength', 'die': 12, 'flat': 3, 'two_handed': True,
+        'evasion_mod': -1, 'trait_mods': {}, 'feature': 'Heavy: −1 Evasion'
+    },
+    'Dagger': {
+        'trait': 'Finesse', 'die': 8,  'flat': 1, 'two_handed': False,
+        'evasion_mod': 0, 'trait_mods': {}, 'feature': ''
+    },
+    'Quarterstaff': {
+        'trait': 'Instinct', 'die': 10, 'flat': 3, 'two_handed': True,
+        'evasion_mod': 0, 'trait_mods': {}, 'feature': ''
+    },
+    'Cutlass': {
+        'trait': 'Presence', 'die': 8,  'flat': 1, 'two_handed': False,
+        'evasion_mod': 0, 'trait_mods': {}, 'feature': ''
+    },
+    'Rapier': {
+        'trait': 'Presence', 'die': 8,  'flat': 0, 'two_handed': False,
+        'evasion_mod': 0, 'trait_mods': {},
+        'feature': 'Quick: mark a Stress to target another creature within range'
+    },
+    'Halberd': {
+        'trait': 'Strength', 'die': 10, 'flat': 2, 'two_handed': True,
+        'evasion_mod': 0, 'trait_mods': {'Finesse': -1},
+        'feature': 'Cumbersome: −1 to Finesse'
+    },
+    'Spear': {
+        'trait': 'Finesse', 'die': 10, 'flat': 2, 'two_handed': True,
+        'evasion_mod': 0, 'trait_mods': {'Finesse': -1},
+        'feature': 'Cumbersome: −1 to Finesse'
+    },
+    'Shortbow': {
+        'trait': 'Agility', 'die': 6,  'flat': 3, 'two_handed': True,
+        'evasion_mod': 0, 'trait_mods': {}, 'feature': ''
+    },
+    'Crossbow': {
+        'trait': 'Finesse', 'die': 6,  'flat': 1, 'two_handed': False,
+        'evasion_mod': 0, 'trait_mods': {}, 'feature': ''
+    },
+    'Longbow': {
+        'trait': 'Agility', 'die': 8,  'flat': 3, 'two_handed': True,
+        'evasion_mod': 0, 'trait_mods': {'Finesse': -1},
+        'feature': 'Cumbersome: −1 to Finesse'
+    },
+    # Magic weapons (Spellcast trait must be used)
+    'Arcane Gauntlets': {
+        'trait': 'Strength', 'die': 10, 'flat': 3, 'two_handed': True,
+        'evasion_mod': 0, 'trait_mods': {}, 'feature': ''
+    },
+    'Hallowed Axe': {
+        'trait': 'Strength', 'die': 8,  'flat': 1, 'two_handed': False,
+        'evasion_mod': 0, 'trait_mods': {}, 'feature': ''
+    },
+    'Glowing Rings': {
+        'trait': 'Agility', 'die': 10, 'flat': 1, 'two_handed': True,
+        'evasion_mod': 0, 'trait_mods': {}, 'feature': ''
+    },
+    'Hand Runes': {
+        'trait': 'Instinct', 'die': 10, 'flat': 0, 'two_handed': False,
+        'evasion_mod': 0, 'trait_mods': {}, 'feature': ''
+    },
+    'Returning Blade': {
+        'trait': 'Finesse', 'die': 8,  'flat': 0, 'two_handed': False,
+        'evasion_mod': 0, 'trait_mods': {},
+        'feature': 'Returning: automatically returns after being thrown'
+    },
+    'Shortstaff': {
+        'trait': 'Instinct', 'die': 8,  'flat': 1, 'two_handed': False,
+        'evasion_mod': 0, 'trait_mods': {}, 'feature': ''
+    },
+    'Dualstaff': {
+        'trait': 'Instinct', 'die': 6,  'flat': 3, 'two_handed': True,
+        'evasion_mod': 0, 'trait_mods': {}, 'feature': ''
+    },
+    'Scepter': {
+        'trait': 'Presence', 'die': 6,  'flat': 0, 'two_handed': True,
+        'evasion_mod': 0, 'trait_mods': {},
+        'feature': 'Versatile: also usable as Presence, Melee, d8'
+    },
+    'Wand': {
+        'trait': 'Knowledge', 'die': 6,  'flat': 1, 'two_handed': False,
+        'evasion_mod': 0, 'trait_mods': {}, 'feature': ''
+    },
+    'Greatstaff': {
+        'trait': 'Knowledge', 'die': 6,  'flat': 0, 'two_handed': True,
+        'evasion_mod': 0, 'trait_mods': {},
+        'feature': 'Powerful: roll an extra damage die and drop the lowest'
+    },
+}
+
+# Tier 1 secondary weapons.  Secondary weapons often grant armour
+# bonuses or a paired damage bonus.  We include armour and evasion
+# modifiers where applicable.  The ``paired_bonus`` field adds to the
+# primary weapon's flat damage.
+TIER1_SECONDARY_WEAPONS: Dict[str, Dict] = {
+    'Shortsword': {
+        'trait': 'Agility', 'die': 8, 'flat': 0, 'paired_bonus': 2,
+        'armor_bonus': 0, 'evasion_mod': 0, 'trait_mods': {},
+        'feature': 'Paired: +2 to primary damage within Melee range'
+    },
+    'Round Shield': {
+        'trait': 'Strength', 'die': 4, 'flat': 0, 'paired_bonus': 0,
+        'armor_bonus': 1, 'evasion_mod': 0, 'trait_mods': {},
+        'feature': 'Protective: +1 to Armor Score'
+    },
+    'Tower Shield': {
+        'trait': 'Strength', 'die': 6, 'flat': 0, 'paired_bonus': 0,
+        'armor_bonus': 2, 'evasion_mod': -1, 'trait_mods': {},
+        'feature': 'Barrier: +2 to Armor Score; −1 Evasion'
+    },
+    'Small Dagger': {
+        'trait': 'Finesse', 'die': 8, 'flat': 0, 'paired_bonus': 2,
+        'armor_bonus': 0, 'evasion_mod': 0, 'trait_mods': {},
+        'feature': 'Paired: +2 to primary damage within Melee range'
+    },
+    'Whip': {
+        'trait': 'Presence', 'die': 6, 'flat': 0, 'paired_bonus': 0,
+        'armor_bonus': 0, 'evasion_mod': 0, 'trait_mods': {},
+        'feature': 'Startling: mark a Stress to push adversaries'
+    },
+    'Grappler': {
+        'trait': 'Finesse', 'die': 6, 'flat': 0, 'paired_bonus': 0,
+        'armor_bonus': 0, 'evasion_mod': 0, 'trait_mods': {},
+        'feature': 'Hooked: pull the target into Melee range on a hit'
+    },
+    'Hand Crossbow': {
+        'trait': 'Finesse', 'die': 6, 'flat': 1, 'paired_bonus': 0,
+        'armor_bonus': 0, 'evasion_mod': 0, 'trait_mods': {},
+        'feature': ''
+    },
+}
+
+# Tier 1 armour options.  Each entry defines base minor and major
+# thresholds (before adding character level), the base armour score,
+# and any modifications to evasion or traits.  Armour features such
+# as Flexible, Heavy and Very Heavy are represented via these mods.
+TIER1_ARMOUR: Dict[str, Dict] = {
+    'Gambeson Armor': {
+        'thresholds': (5, 11), 'score': 3,
+        'evasion_mod': +1, 'trait_mods': {}, 'feature': 'Flexible: +1 to Evasion'
+    },
+    'Leather Armor': {
+        'thresholds': (6, 13), 'score': 3,
+        'evasion_mod': 0, 'trait_mods': {}, 'feature': ''
+    },
+    'Chainmail Armor': {
+        'thresholds': (7, 15), 'score': 4,
+        'evasion_mod': -1, 'trait_mods': {}, 'feature': 'Heavy: −1 to Evasion'
+    },
+    'Full Plate Armor': {
+        'thresholds': (8, 17), 'score': 4,
+        'evasion_mod': -2, 'trait_mods': {'Agility': -1},
+        'feature': 'Very Heavy: −2 to Evasion; −1 to Agility'
+    },
+}
+
+def apply_equipment(
+    character: Character,
+    primary: Optional[str] = None,
+    secondary: Optional[str] = None,
+    armour: Optional[str] = None
+) -> None:
+    """Apply selected equipment to the character.
+
+    Resets the character's hit points, evasion and traits to their
+    base values, then applies the chosen armour and weapons.  This
+    function modifies the character in place.
+
+    Parameters
+    ----------
+    character: Character
+        The character to modify.  Its base_hp, base_evasion and
+        base_traits must already be populated.
+    primary: Optional[str]
+        The name of the primary weapon.  If None or unknown, no
+        primary weapon is equipped.
+    secondary: Optional[str]
+        The name of the secondary weapon.  If None or unknown, no
+        secondary weapon is equipped.
+    armour: Optional[str]
+        The name of the armour.  If None or unknown, the character has no
+        armour and therefore no armour thresholds or armour score.
+    """
+    # Reset to base values
+    character.hp = character.base_hp
+    character.evasion = character.base_evasion
+    character.traits = dict(character.base_traits)
+    character.armor_thresholds = (0, 0)
+    character.armor_score = 0
+    character.damage_roll = None
+    # Record equipment names
+    character.equipment = {}
+    if primary:
+        character.equipment['primary'] = primary
+    if secondary:
+        character.equipment['secondary'] = secondary
+    if armour:
+        character.equipment['armor'] = armour
+    # Apply armour
+    if armour and armour in TIER1_ARMOUR:
+        data = TIER1_ARMOUR[armour]
+        # Thresholds: add current level to base thresholds
+        min_thr, max_thr = data['thresholds']
+        character.armor_thresholds = (min_thr + character.level, max_thr + character.level)
+        character.armor_score = data['score']
+        character.evasion += data.get('evasion_mod', 0)
+        for trait, mod in data.get('trait_mods', {}).items():
+            character.traits[trait] += mod
+    # Apply primary weapon
+    primary_data = None
+    flat_bonus = 0
+    if primary and primary in TIER1_PRIMARY_WEAPONS:
+        primary_data = TIER1_PRIMARY_WEAPONS[primary]
+        # Adjust evasion and traits for weapon features
+        character.evasion += primary_data.get('evasion_mod', 0)
+        for trait, mod in primary_data.get('trait_mods', {}).items():
+            character.traits[trait] += mod
+        # Base damage die and flat bonus
+        base_die = primary_data['die']
+        flat_bonus = primary_data['flat']
+    # Apply secondary weapon
+    if secondary and secondary in TIER1_SECONDARY_WEAPONS:
+        sec = TIER1_SECONDARY_WEAPONS[secondary]
+        # Secondary may also be used as a weapon, but for simplicity we
+        # treat its damage as an off‑hand that only influences armour and
+        # paired bonuses.
+        character.armor_score += sec.get('armor_bonus', 0)
+        character.evasion += sec.get('evasion_mod', 0)
+        for trait, mod in sec.get('trait_mods', {}).items():
+            character.traits[trait] += mod
+        # Paired bonus adds to primary flat damage
+        flat_bonus += sec.get('paired_bonus', 0)
+    # Compute damage roll expression
+    if primary_data is not None:
+        die_sides = primary_data['die']
+        # Number of dice equals proficiency
+        num_dice = character.proficiency
+        # Compose the damage roll string
+        dmg_str = f"{num_dice}d{die_sides}"
+        if flat_bonus:
+            dmg_str += f"+{flat_bonus}"
+        character.damage_roll = dmg_str
+
+
+# ---------------------------------------------------------------------------
 # Data definitions
 # ---------------------------------------------------------------------------
 
 # Classes: starting HP, starting Evasion, domains, class feature and subclass names
 CLASSES: Dict[str, ClassInfo] = {
-    'Bard': ClassInfo('Bard', 7, 10, ('Grace', 'Codex'),
+    # Starting HP and Evasion values pulled directly from the SRD【37841809467909†L680-L690】【37841809467909†L1242-L1243】【37841809467909†L1346-L1348】【37841809467909†L1546-L1549】【37841809467909†L1673-L1676】【37841809467909†L1781-L1784】【37841809467909†L1894-L1896】【37841809467909†L2009-L2010】.
+    'Bard': ClassInfo('Bard', 5, 10, ('Grace', 'Codex'),
                       'Make a Scene: Spend 3 Hope to temporarily Distract a target within Close range, giving them a -2 penalty to their Difficulty',
                       ('Troubadour', 'Wordsmith')),
-    'Druid': ClassInfo('Druid', 8, 10, ('Sage', 'Arcana'),
+    'Druid': ClassInfo('Druid', 6, 10, ('Sage', 'Arcana'),
                       'Evolution: Spend 3 Hope to transform into Beastform without marking a Stress; raise one trait by +1 until you drop out of Beastform',
                       ('Warden of the Elements', 'Warden of Renewal')),
-    'Guardian': ClassInfo('Guardian', 10, 9, ('Valor', 'Blade'),
+    'Guardian': ClassInfo('Guardian', 7, 9, ('Valor', 'Blade'),
                           'Frontline Tank: Spend 3 Hope to clear 2 Armor Slots',
                           ('Stalwart', 'Vengeance')),
-    'Ranger': ClassInfo('Ranger', 8, 12, ('Bone', 'Sage'),
+    'Ranger': ClassInfo('Ranger', 6, 12, ('Bone', 'Sage'),
                         'Hold Them Off: Spend 3 Hope when you succeed on an attack with a weapon to use that same roll against two additional adversaries within range',
                         ('Beastbound', 'Wayfinder')),
-    'Rogue': ClassInfo('Rogue', 7, 12, ('Midnight', 'Grace'),
+    'Rogue': ClassInfo('Rogue', 6, 12, ('Midnight', 'Grace'),
                        "Rogue's Dodge: Spend 3 Hope to gain a +2 bonus to your Evasion until the next time an attack succeeds against you; otherwise this bonus lasts until your next rest",
                        ('Nightwalker', 'Syndicate')),
-    'Seraph': ClassInfo('Seraph', 9, 9, ('Splendor', 'Valor'),
+    'Seraph': ClassInfo('Seraph', 7, 9, ('Splendor', 'Valor'),
                         'Life Support: Spend 3 Hope to clear a Hit Point on an ally within Close range',
                         ('Divine Wielder', 'Winged Sentinel')),
     'Sorcerer': ClassInfo('Sorcerer', 6, 10, ('Arcana', 'Midnight'),
                           'Volatile Magic: Spend 3 Hope to reroll any number of your damage dice on an attack that deals magic damage',
                           ('Elemental Origin', 'Primal Origin')),
-    'Warrior': ClassInfo('Warrior', 9, 11, ('Blade', 'Bone'),
+    'Warrior': ClassInfo('Warrior', 6, 11, ('Blade', 'Bone'),
                          'No Mercy: Spend 3 Hope to gain a +1 bonus to your attack rolls until your next rest',
                          ('Call of the Brave', 'Call of the Slayer')),
-    'Wizard': ClassInfo('Wizard', 6, 11, ('Codex', 'Splendor'),
+    'Wizard': ClassInfo('Wizard', 5, 11, ('Codex', 'Splendor'),
                         'Not This Time: Spend 3 Hope to force an adversary within Far range to reroll an attack or damage roll',
                         ('School of Knowledge', 'School of War')),
 }
@@ -764,6 +1123,52 @@ TRAIT_PRIORITIES: Dict[str, List[str]] = {
     'Healer': ['Presence', 'Instinct', 'Knowledge', 'Agility', 'Finesse', 'Strength'],
     'Face': ['Presence', 'Finesse', 'Agility', 'Knowledge', 'Instinct', 'Strength'],
     'Control': ['Knowledge', 'Instinct', 'Presence', 'Finesse', 'Agility', 'Strength'],
+}
+
+# Primary trait used by each class for spellcasting or main attacks.  This
+# mapping allows the generator to apply the highest +2 bonus to the trait
+# most central to a class’s playstyle when ``assign_traits`` is given a
+# class or subclass.  The traits are derived from the subclasses’ spellcast
+# traits or typical attack abilities in the SRD【876238438073902†L247-L368】.
+CLASS_PRIMARY_TRAIT: Dict[str, str] = {
+    'Bard': 'Presence',
+    'Druid': 'Instinct',
+    'Guardian': 'Strength',
+    'Ranger': 'Agility',
+    'Rogue': 'Finesse',
+    'Seraph': 'Strength',
+    'Sorcerer': 'Instinct',
+    'Warrior': 'Strength',
+    'Wizard': 'Knowledge',
+}
+
+# Preferred subclasses for each archetype/class combination.  When a user
+# specifies a class but not a subclass in ``create_character``, the
+# generator consults this mapping to choose the subclass that best fits
+# the given archetype.  These preferences mirror those used in
+# ``choose_class_and_subclass``.
+SUBCLASS_PREFERENCE: Dict[Tuple[str, str], str] = {
+    ('Tank', 'Guardian'): 'Stalwart',
+    ('Tank', 'Warrior'): 'Call of the Brave',
+    ('Damage', 'Warrior'): 'Call of the Slayer',
+    ('Damage', 'Rogue'): 'Nightwalker',
+    ('Damage', 'Ranger'): 'Wayfinder',
+    ('Damage', 'Sorcerer'): 'Elemental Origin',
+    ('Sneaky', 'Rogue'): 'Nightwalker',
+    ('Sneaky', 'Ranger'): 'Wayfinder',
+    ('Support', 'Seraph'): 'Divine Wielder',
+    ('Support', 'Bard'): 'Troubadour',
+    ('Support', 'Druid'): 'Warden of Renewal',
+    ('Support', 'Wizard'): 'School of Knowledge',
+    ('Healer', 'Seraph'): 'Divine Wielder',
+    ('Healer', 'Druid'): 'Warden of Renewal',
+    ('Healer', 'Bard'): 'Troubadour',
+    ('Face', 'Bard'): 'Wordsmith',
+    ('Face', 'Rogue'): 'Syndicate',
+    ('Face', 'Seraph'): 'Divine Wielder',
+    ('Control', 'Wizard'): 'School of War',
+    ('Control', 'Druid'): 'Warden of the Elements',
+    ('Control', 'Sorcerer'): 'Primal Origin',
 }
 
 # Equipment options per archetype【876238438073902†L1258-L1420】

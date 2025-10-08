@@ -6,26 +6,26 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <style>
       body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
-      h1 { margin: 0 0 1rem; }
-      label { display:block; margin: .5rem 0 .25rem; }
-      input, select, button { font-size: 1rem; padding: .5rem; }
-      button { cursor: pointer; }
+      h1 { margin-top: 0; }
+      label { display:block; margin:.5rem 0 .25rem; }
+      input, select, button { font-size: 1rem; padding: .4rem; }
+      button { cursor: pointer; margin-right: .5rem; }
       pre { background:#f6f8fa; padding:1rem; border-radius:.5rem; overflow:auto; }
-      .row{ display:flex; gap:.75rem; flex-wrap:wrap; align-items:end; }
-      .row > div{ flex:1 1 180px; }
+      .row{ display:flex; gap:.75rem; flex-wrap:wrap; align-items:flex-end; }
+      .row > div{ flex:1 1 200px; }
     </style>
   </head>
   <body>
     <h1>Daggerheart Character Creator</h1>
+    <p>Generate a canonical Daggerheart character and customise their equipment.</p>
     <div class="row">
       <div>
         <label for="level">Level (1–10)</label>
-        <input id="level" type="number" min="1" max="10" value="3" />
+        <input id="level" type="number" min="1" max="10" value="1" />
       </div>
       <div>
-        <label for="archetype">Type</label>
+        <label for="archetype">Archetype</label>
         <select id="archetype">
-          <option value="">(none)</option>
           <option>Tank</option>
           <option>Damage</option>
           <option>Sneaky</option>
@@ -37,36 +37,142 @@
       </div>
       <div>
         <label>&nbsp;</label>
-        <button id="go">Generate</button>
+        <button id="generate">Generate</button>
       </div>
     </div>
-
-    <p>Or lock class/subclass via query (optional):</p>
+    <p>Select class and subclass (optional):</p>
     <div class="row">
-      <div><label for="cls">Class</label><input id="cls" placeholder="e.g., Guardian" /></div>
-      <div><label for="sub">Subclass</label><input id="sub" placeholder="e.g., Vanguard" /></div>
+      <div>
+        <label for="class">Class</label>
+        <select id="class">
+          <option value="">— Random —</option>
+        </select>
+      </div>
+      <div>
+        <label for="subclass">Subclass</label>
+        <select id="subclass" disabled>
+          <option value="">— Any —</option>
+        </select>
+      </div>
     </div>
-
+    <p>Select equipment (optional):</p>
+    <div class="row">
+      <div>
+        <label for="primary">Primary Weapon</label>
+        <select id="primary">
+          <option value="">— None —</option>
+        </select>
+      </div>
+      <div>
+        <label for="secondary">Secondary Weapon</label>
+        <select id="secondary">
+          <option value="">— None —</option>
+        </select>
+      </div>
+      <div>
+        <label for="armor">Armor</label>
+        <select id="armor">
+          <option value="">— None —</option>
+        </select>
+      </div>
+    </div>
     <h2>Result</h2>
     <pre id="out">Click Generate…</pre>
-
     <script>
-      function q(sel){ return document.querySelector(sel); }
-      q('#go').addEventListener('click', async () => {
-        const level = q('#level').value.trim() || '1';
-        const archetype = q('#archetype').value.trim();
-        const cls = q('#cls').value.trim();
-        const sub = q('#sub').value.trim();
-
+      // Define class->subclass mapping for the dropdowns
+      const classMap = {
+        Bard: ['Troubadour','Wordsmith'],
+        Druid: ['Warden of the Elements','Warden of Renewal'],
+        Guardian: ['Stalwart','Vengeance'],
+        Ranger: ['Beastbound','Wayfinder'],
+        Rogue: ['Nightwalker','Syndicate'],
+        Seraph: ['Divine Wielder','Winged Sentinel'],
+        Sorcerer: ['Elemental Origin','Primal Origin'],
+        Warrior: ['Call of the Brave','Call of the Slayer'],
+        Wizard: ['School of Knowledge','School of War'],
+      };
+      const classSelect = document.querySelector('#class');
+      const subclassSelect = document.querySelector('#subclass');
+      // Populate class dropdown
+      Object.keys(classMap).forEach(cls => {
+        const opt = document.createElement('option');
+        opt.value = cls;
+        opt.textContent = cls;
+        classSelect.appendChild(opt);
+      });
+      // Update subclass options when class changes
+      classSelect.addEventListener('change', () => {
+        const selected = classSelect.value;
+        // Clear current subclass options
+        subclassSelect.innerHTML = '';
+        const defaultOpt = document.createElement('option');
+        defaultOpt.value = '';
+        defaultOpt.textContent = '— Any —';
+        subclassSelect.appendChild(defaultOpt);
+        if (!selected) {
+          subclassSelect.disabled = true;
+          return;
+        }
+        classMap[selected].forEach(sub => {
+          const opt = document.createElement('option');
+          opt.value = sub;
+          opt.textContent = sub;
+          subclassSelect.appendChild(opt);
+        });
+        subclassSelect.disabled = false;
+      });
+      // Equipment lists
+      const primaryOptions = [
+        'Broadsword','Longsword','Battleaxe','Greatsword','Mace','Warhammer',
+        'Dagger','Quarterstaff','Cutlass','Rapier','Halberd','Spear',
+        'Shortbow','Crossbow','Longbow',
+        'Arcane Gauntlets','Hallowed Axe','Glowing Rings','Hand Runes','Returning Blade',
+        'Shortstaff','Dualstaff','Scepter','Wand','Greatstaff'
+      ];
+      const secondaryOptions = [
+        'Shortsword','Round Shield','Tower Shield','Small Dagger','Whip','Grappler','Hand Crossbow'
+      ];
+      const armorOptions = [
+        'Gambeson Armor','Leather Armor','Chainmail Armor','Full Plate Armor'
+      ];
+      // Populate equipment dropdowns
+      function fillSelect(selectEl, list) {
+        list.forEach(item => {
+          const opt = document.createElement('option');
+          opt.value = item;
+          opt.textContent = item;
+          selectEl.appendChild(opt);
+        });
+      }
+      fillSelect(document.querySelector('#primary'), primaryOptions);
+      fillSelect(document.querySelector('#secondary'), secondaryOptions);
+      fillSelect(document.querySelector('#armor'), armorOptions);
+      // Generate button event
+      document.querySelector('#generate').addEventListener('click', async () => {
+        const level = document.querySelector('#level').value.trim() || '1';
+        const archetype = document.querySelector('#archetype').value.trim();
+        const cls = classSelect.value.trim();
+        const sub = subclassSelect.value.trim();
+        const primary = document.querySelector('#primary').value.trim();
+        const secondary = document.querySelector('#secondary').value.trim();
+        const armor = document.querySelector('#armor').value.trim();
+        // Build query parameters
         const params = new URLSearchParams();
         params.set('level', level);
-        if (archetype) params.set('archetype', archetype);
+        params.set('archetype', archetype);
         if (cls) params.set('class', cls);
         if (sub) params.set('subclass', sub);
-
-        const res = await fetch('/api/generate?' + params.toString());
-        const data = await res.json();
-        q('#out').textContent = JSON.stringify(data, null, 2);
+        if (primary) params.set('primary', primary);
+        if (secondary) params.set('secondary', secondary);
+        if (armor) params.set('armor', armor);
+        try {
+          const res = await fetch('/api/generate?' + params.toString());
+          if (!res.ok) throw new Error('Server returned ' + res.status);
+          const data = await res.json();
+          document.querySelector('#out').textContent = JSON.stringify(data, null, 2);
+        } catch (err) {
+          document.querySelector('#out').textContent = 'Error: ' + err;
+        }
       });
     </script>
   </body>
