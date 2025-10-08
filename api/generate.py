@@ -65,7 +65,9 @@ class handler(BaseHTTPRequestHandler):  # type: ignore
         secondary = qs.get('secondary', [None])[0]
         armour = qs.get('armor', [None])[0]
         # Normalise blank or placeholder selections
-        def normalize(val: str | None) -> Optional[str]:
+        # On older Python runtimes PEP 604 unions (``str | None``) are not
+        # supported, so we use Optional[str] for better compatibility.
+        def normalize(val: Optional[str]) -> Optional[str]:
             if not val:
                 return None
             # Remove leading/trailing whitespace
