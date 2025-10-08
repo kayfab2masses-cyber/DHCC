@@ -211,20 +211,40 @@ class Character:
 # ---------------------------------------------------------------------------
 
 def load_domain_cards() -> List[Dict]:
-    """Load the complete domain card compendium from JSON.
-
-    Returns a list of dictionaries where each dictionary has the following
-    keys: name, domain, level, type, recall_cost, description.
     """
-    here = os.path.dirname(__file__)
-    json_path = os.path.join(here, 'domain_cards.json')
-    if not os.path.exists(json_path):
-        raise FileNotFoundError(
-            'domain_cards.json not found; ensure the JSON file extracted from the '
-            'Domain Cards PDF is placed alongside this module.')
-    with open(json_path, 'r') as f:
-        cards = json.load(f)
-    return cards
+    Load the complete domain card compendium from JSON.
+
+    The function attempts to locate ``domain_cards.json`` in a number of
+    sensible locations to support both server and client use cases.  It
+    first checks the directory of this module (the repo root when
+    packaged for deployment).  If not found, it falls back to the
+    repository root and then the ``public`` directory.  This behaviour
+    ensures that the generator does not crash if the user moves the JSON
+    into ``public/`` for browser consumption.  It will raise a
+    ``FileNotFoundError`` if the file cannot be found in any location.
+
+    Returns
+    -------
+    List[Dict]
+        A list of domain card dictionaries with fields ``name``,
+        ``domain``, ``level``, ``type``, ``recall_cost`` and
+        ``description``.
+    """
+    # Determine candidate locations for the JSON file
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(here, 'domain_cards.json'),
+        os.path.join(os.path.dirname(here), 'domain_cards.json'),
+        os.path.join(os.path.dirname(here), 'public', 'domain_cards.json'),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    # If we didn't return above, none of the paths existed
+    raise FileNotFoundError(
+        'domain_cards.json not found; expected at one of: ' + ', '.join(candidates)
+    )
 
 
 DOMAIN_CARDS = load_domain_cards()
@@ -271,11 +291,20 @@ def choose_class_and_subclass(archetype: str) -> Tuple[str, Subclass]:
             'secondary': ['Sorcerer']
         }
     }
+    # ``Random`` and ``Any`` archetypes mean choose any class and subclass uniformly
+    if archetype.lower() in ('random', 'any', ''):
+        class_name = random.choice(list(CLASSES.keys()))
+        subclass_name = random.choice(list(SUBCLASSES[class_name].keys()))
+        return class_name, SUBCLASSES[class_name][subclass_name]
     if archetype not in options:
         raise ValueError(f'Unknown archetype {archetype}')
+    # Build a weighted pool for the archetype
     choice_pool = options[archetype]['primary'] * 3 + options[archetype]['secondary']
     class_name = random.choice(choice_pool)
-    # Determine appropriate subclass: map archetype → subclass
+    # Determine appropriate subclass: map archetype → subclass.  If no
+    # mapping exists, fall back to a random subclass rather than always
+    # selecting the first one.  This gives more variety when the user does
+    # not care about subclass specifics.
     subclass_map = {
         ('Tank', 'Guardian'): 'Stalwart',
         ('Tank', 'Warrior'): 'Call of the Brave',
@@ -301,8 +330,8 @@ def choose_class_and_subclass(archetype: str) -> Tuple[str, Subclass]:
     }
     subclass_name = subclass_map.get((archetype, class_name))
     if subclass_name is None:
-        # default to first subclass defined for the class
-        subclass_name = CLASSES[class_name].subclasses[0]
+        # pick a random subclass for the chosen class
+        subclass_name = random.choice(list(SUBCLASSES[class_name].keys()))
     subclass_info = SUBCLASSES[class_name][subclass_name]
     return class_name, subclass_info
 
@@ -382,9 +411,14 @@ def generate_experiences(archetype: str, char_class: str) -> List[str]:
         'Healer': ['Field Medic', 'Spiritual Healer'],
         'Face': ['Silver Tongue', 'Charming Performer'],
         'Control': ['Arcane Scholar', 'Battlefield Manipulator']
+        ,
+        # A fallback for when no archetype is specified.  Random characters
+        # receive generic adventuring experiences.
+        'Random': ['Wanderer', 'Adventurer']
     }
     # Combine archetype theme with class to make it unique
-    base_names = themes[archetype.title()]
+    # Use a default if the archetype is not present
+    base_names = themes.get(archetype.title(), themes['Random'])
     return [f"{base_names[0]} {char_class}", f"{base_names[1]} {char_class}"]
 
 
@@ -420,9 +454,22 @@ def pick_domain_card(character: Character, archetype: str, level: int) -> Option
     """
     class_domains = CLASSES[character.char_class].domains
     # Filter eligible cards
-    eligible = [c for c in DOMAIN_CARDS
-                if c['domain'] in class_domains and c['level'] <= level
-                and c['name'] not in character.domain_cards]
+    eligible = []
+    for c in DOMAIN_CARDS:
+        # Card must match one of the character's domains
+        if c['domain'] not in class_domains:
+            continue
+        # Skip cards with no defined level requirement
+        card_lvl = c.get('level')
+        if card_lvl is None:
+            continue
+        # Only include cards available at or below the character's level
+        if card_lvl > level:
+            continue
+        # Skip cards already taken
+        if c['name'] in character.domain_cards:
+            continue
+        eligible.append(c)
     if not eligible:
         return None
     # Keywords to score descriptions
@@ -1123,6 +1170,12 @@ TRAIT_PRIORITIES: Dict[str, List[str]] = {
     'Healer': ['Presence', 'Instinct', 'Knowledge', 'Agility', 'Finesse', 'Strength'],
     'Face': ['Presence', 'Finesse', 'Agility', 'Knowledge', 'Instinct', 'Strength'],
     'Control': ['Knowledge', 'Instinct', 'Presence', 'Finesse', 'Agility', 'Strength'],
+    # When no archetype is specified, we use the "Random" role.  It
+    # distributes the trait bonuses broadly: +2 to Agility, +1 to
+    # Strength and Finesse, and 0 to Instinct and Presence, leaving
+    # Knowledge with the -1 penalty.  This encourages balanced
+    # characters when the user does not select a role.
+    'Random': ['Agility', 'Strength', 'Finesse', 'Instinct', 'Presence', 'Knowledge'],
 }
 
 # Primary trait used by each class for spellcasting or main attacks.  This
