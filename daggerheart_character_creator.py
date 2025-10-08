@@ -271,11 +271,20 @@ def choose_class_and_subclass(archetype: str) -> Tuple[str, Subclass]:
             'secondary': ['Sorcerer']
         }
     }
+    # ``Random`` and ``Any`` archetypes mean choose any class and subclass uniformly
+    if archetype.lower() in ('random', 'any', ''):
+        class_name = random.choice(list(CLASSES.keys()))
+        subclass_name = random.choice(list(SUBCLASSES[class_name].keys()))
+        return class_name, SUBCLASSES[class_name][subclass_name]
     if archetype not in options:
         raise ValueError(f'Unknown archetype {archetype}')
+    # Build a weighted pool for the archetype
     choice_pool = options[archetype]['primary'] * 3 + options[archetype]['secondary']
     class_name = random.choice(choice_pool)
-    # Determine appropriate subclass: map archetype → subclass
+    # Determine appropriate subclass: map archetype → subclass.  If no
+    # mapping exists, fall back to a random subclass rather than always
+    # selecting the first one.  This gives more variety when the user does
+    # not care about subclass specifics.
     subclass_map = {
         ('Tank', 'Guardian'): 'Stalwart',
         ('Tank', 'Warrior'): 'Call of the Brave',
@@ -301,8 +310,8 @@ def choose_class_and_subclass(archetype: str) -> Tuple[str, Subclass]:
     }
     subclass_name = subclass_map.get((archetype, class_name))
     if subclass_name is None:
-        # default to first subclass defined for the class
-        subclass_name = CLASSES[class_name].subclasses[0]
+        # pick a random subclass for the chosen class
+        subclass_name = random.choice(list(SUBCLASSES[class_name].keys()))
     subclass_info = SUBCLASSES[class_name][subclass_name]
     return class_name, subclass_info
 

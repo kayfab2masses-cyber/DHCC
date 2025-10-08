@@ -83,8 +83,46 @@
       </div>
     </div>
     <h2>Result</h2>
-    <pre id="out">Click Generate…</pre>
+    <!-- Result container; populated with structured character output -->
+    <div id="out">Click Generate…</div>
     <script>
+      // Render a character object into a human friendly HTML snippet.
+      function renderCharacter(data) {
+        if (!data) {
+          return '<p>No data</p>';
+        }
+        // Build a details block
+        let html = '';
+        html += '<h3>' + (data.name || 'Unnamed Character') + '</h3>';
+        html += '<p><strong>Class:</strong> ' + data.char_class + ' – ' + data.subclass + '</p>';
+        html += '<p><strong>Level:</strong> ' + data.level + '</p>';
+        html += '<p><strong>Hit Points:</strong> ' + data.hp + ', <strong>Evasion:</strong> ' + data.evasion + '</p>';
+        if (data.armor_thresholds && (data.armor_thresholds[0] || data.armor_thresholds[1])) {
+          html += '<p><strong>Armor Thresholds:</strong> ' + data.armor_thresholds[0] + ' / ' + data.armor_thresholds[1] + ' &nbsp; <strong>Armor Score:</strong> ' + data.armor_score + '</p>';
+        }
+        html += '<p><strong>Traits:</strong> ' + Object.entries(data.traits).map(([k,v]) => k + ' ' + (v >= 0 ? '+' + v : v)).join(', ') + '</p>';
+        // Heritage
+        if (data.heritage) {
+          const h = data.heritage;
+          const anc = h.ancestry + ' (' + h.ancestry_features.join('; ') + ')';
+          const com = h.community + ' (' + h.community_feature + ')';
+          html += '<p><strong>Heritage:</strong> ' + anc + '; ' + com + '</p>';
+        }
+        if (data.experiences && data.experiences.length) {
+          html += '<p><strong>Experiences:</strong> ' + data.experiences.join(', ') + '</p>';
+        }
+        if (data.equipment && Object.keys(data.equipment).length) {
+          const eq = Object.entries(data.equipment).map(([slot, item]) => slot.charAt(0).toUpperCase() + slot.slice(1) + ': ' + item);
+          html += '<p><strong>Equipment:</strong> ' + eq.join(', ') + '</p>';
+        }
+        if (data.damage_roll) {
+          html += '<p><strong>Damage Roll:</strong> ' + data.damage_roll + '</p>';
+        }
+        if (data.domain_cards && data.domain_cards.length) {
+          html += '<p><strong>Domain Cards:</strong> ' + data.domain_cards.join(', ') + '</p>';
+        }
+        return html;
+      }
       // Define class->subclass mapping for the dropdowns
       const classMap = {
         Bard: ['Troubadour','Wordsmith'],
@@ -174,7 +212,8 @@
           const res = await fetch('/api/generate?' + params.toString());
           if (!res.ok) throw new Error('Server returned ' + res.status);
           const data = await res.json();
-          document.querySelector('#out').textContent = JSON.stringify(data, null, 2);
+          // Populate structured output
+          document.querySelector('#out').innerHTML = renderCharacter(data);
           // Reveal the equipment row after a character has been generated
           document.getElementById('equipmentRow').style.display = 'flex';
         } catch (err) {

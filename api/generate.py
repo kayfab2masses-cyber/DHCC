@@ -84,7 +84,8 @@ class handler(BaseHTTPRequestHandler):  # type: ignore
         armour = normalize(armour)
         # Determine archetype if not provided by looking at the class
         if archetype is None:
-            # Map classes to archetype defaults; these weights follow the SRD archetype matrix
+            # When no archetype is provided, infer from the class if present.
+            # Otherwise use 'Random' to indicate a fully random selection across all classes.
             default_map = {
                 'Guardian': 'Tank',
                 'Warrior': 'Damage',
@@ -98,11 +99,18 @@ class handler(BaseHTTPRequestHandler):  # type: ignore
             }
             if class_name and class_name in default_map:
                 archetype = default_map[class_name]
+            else:
+                archetype = 'Random'
         try:
-            # Create the base character; if archetype is still None, default to "Damage" for balance
+            # Create the base character; pass through the selected or inferred archetype.
             char = create_character(level, archetype or 'Damage', class_name=class_name, subclass_name=subclass_name)
             # Apply equipment if provided
             apply_equipment(char, primary=primary, secondary=secondary, armour=armour)
+            # Do not expose the archetype in the output
+            try:
+                char.archetype = None  # type: ignore
+            except Exception:
+                pass
             # Convert to JSON
             data = _to_json(char)
             payload = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
