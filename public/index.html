@@ -119,10 +119,29 @@
           html += '<p><strong>Damage Roll:</strong> ' + data.damage_roll + '</p>';
         }
         if (data.domain_cards && data.domain_cards.length) {
-          html += '<p><strong>Domain Cards:</strong> ' + data.domain_cards.join(', ') + '</p>';
+          html += '<p><strong>Domain Cards:</strong></p><ul>';
+          data.domain_cards.forEach(name => {
+            if (window.domainCardsData) {
+              const card = window.domainCardsData.find(c => c.name === name);
+              if (card) {
+                html += '<li><strong>' + card.name + '</strong>: ' + card.description + '</li>';
+                return;
+              }
+            }
+            // fallback to name only
+            html += '<li>' + name + '</li>';
+          });
+          html += '</ul>';
         }
         return html;
       }
+
+      // Load domain card data on page load
+      window.domainCardsData = null;
+      fetch('/domain_cards.json')
+        .then(res => res.json())
+        .then(data => { window.domainCardsData = data; })
+        .catch(() => { window.domainCardsData = null; });
       // Define class->subclass mapping for the dropdowns
       const classMap = {
         Bard: ['Troubadour','Wordsmith'],

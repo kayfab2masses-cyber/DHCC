@@ -391,9 +391,14 @@ def generate_experiences(archetype: str, char_class: str) -> List[str]:
         'Healer': ['Field Medic', 'Spiritual Healer'],
         'Face': ['Silver Tongue', 'Charming Performer'],
         'Control': ['Arcane Scholar', 'Battlefield Manipulator']
+        ,
+        # A fallback for when no archetype is specified.  Random characters
+        # receive generic adventuring experiences.
+        'Random': ['Wanderer', 'Adventurer']
     }
     # Combine archetype theme with class to make it unique
-    base_names = themes[archetype.title()]
+    # Use a default if the archetype is not present
+    base_names = themes.get(archetype.title(), themes['Random'])
     return [f"{base_names[0]} {char_class}", f"{base_names[1]} {char_class}"]
 
 
@@ -429,9 +434,22 @@ def pick_domain_card(character: Character, archetype: str, level: int) -> Option
     """
     class_domains = CLASSES[character.char_class].domains
     # Filter eligible cards
-    eligible = [c for c in DOMAIN_CARDS
-                if c['domain'] in class_domains and c['level'] <= level
-                and c['name'] not in character.domain_cards]
+    eligible = []
+    for c in DOMAIN_CARDS:
+        # Card must match one of the character's domains
+        if c['domain'] not in class_domains:
+            continue
+        # Skip cards with no defined level requirement
+        card_lvl = c.get('level')
+        if card_lvl is None:
+            continue
+        # Only include cards available at or below the character's level
+        if card_lvl > level:
+            continue
+        # Skip cards already taken
+        if c['name'] in character.domain_cards:
+            continue
+        eligible.append(c)
     if not eligible:
         return None
     # Keywords to score descriptions
@@ -1132,6 +1150,12 @@ TRAIT_PRIORITIES: Dict[str, List[str]] = {
     'Healer': ['Presence', 'Instinct', 'Knowledge', 'Agility', 'Finesse', 'Strength'],
     'Face': ['Presence', 'Finesse', 'Agility', 'Knowledge', 'Instinct', 'Strength'],
     'Control': ['Knowledge', 'Instinct', 'Presence', 'Finesse', 'Agility', 'Strength'],
+    # When no archetype is specified, we use the "Random" role.  It
+    # distributes the trait bonuses broadly: +2 to Agility, +1 to
+    # Strength and Finesse, and 0 to Instinct and Presence, leaving
+    # Knowledge with the -1 penalty.  This encourages balanced
+    # characters when the user does not select a role.
+    'Random': ['Agility', 'Strength', 'Finesse', 'Instinct', 'Presence', 'Knowledge'],
 }
 
 # Primary trait used by each class for spellcasting or main attacks.  This
