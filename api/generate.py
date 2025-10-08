@@ -42,6 +42,7 @@ if ROOT not in sys.path:
 from daggerheart_character_creator import create_character, apply_equipment
 
 
+
 def _to_json(obj):
     """Convert dataclass instances and other objects to JSON serialisable forms."""
     if hasattr(obj, '__dict__'):
@@ -52,40 +53,43 @@ def _to_json(obj):
 
 
 class handler(BaseHTTPRequestHandler):  # type: ignore
-    """Simple HTTP handler for generating characters."""
+    """
+    Simple HTTP handler for generating characters.
+
+    This handler returns structured JSON for a Daggerheart character and
+    will include error details on failure.  All query parameters are
+    optional.  If the class is omitted the generator will choose a
+    random class.  If the archetype is omitted it will infer one
+    from the class or default to ``Random`` for a balanced build.
+    """
 
     def do_GET(self) -> None:
-        # Parse the query string
         qs = parse_qs(urlparse(self.path).query)
-        level = int(qs.get('level', ['1'])[0])
-        archetype = qs.get('archetype', [''])[0]
-        class_name = qs.get('class', [None])[0]
-        subclass_name = qs.get('subclass', [None])[0]
-        primary = qs.get('primary', [None])[0]
-        secondary = qs.get('secondary', [None])[0]
-        armour = qs.get('armor', [None])[0]
-        # Normalise blank or placeholder selections
-        # On older Python runtimes PEP 604 unions (``str | None``) are not
-        # supported, so we use Optional[str] for better compatibility.
-        def normalize(val: Optional[str]) -> Optional[str]:
-            if not val:
+        try:
+            # Parse level and ensure it is an integer between 1 and 10
+            lvl_str = qs.get('level', ['1'])[0]
+            level = int(lvl_str)
+            if not (1 <= level <= 10):
+                raise ValueError('level must be between 1 and 10')
+        except Exception:
+            level = 1
+        # Helper to strip blank/placeholder values to None
+        def norm(val: Optional[str]) -> Optional[str]:
+            if val is None:
                 return None
-            # Remove leading/trailing whitespace
             v = str(val).strip()
-            # ignore fancy "— None —" labels or dashes
-            if v.startswith('—') or v.lower().startswith('none'):
+            if not v or v.lower().startswith('none') or v.startswith('—'):
                 return None
             return v
-        archetype = normalize(archetype)
-        class_name = normalize(class_name)
-        subclass_name = normalize(subclass_name)
-        primary = normalize(primary)
-        secondary = normalize(secondary)
-        armour = normalize(armour)
-        # Determine archetype if not provided by looking at the class
+        # Extract and normalise parameters
+        class_name = norm(qs.get('class', [None])[0])
+        subclass_name = norm(qs.get('subclass', [None])[0])
+        primary = norm(qs.get('primary', [None])[0])
+        secondary = norm(qs.get('secondary', [None])[0])
+        armour = norm(qs.get('armor', [None])[0])
+        archetype = norm(qs.get('archetype', [None])[0])
+        # Infer a sensible archetype if none provided
         if archetype is None:
-            # When no archetype is provided, infer from the class if present.
-            # Otherwise use 'Random' to indicate a fully random selection across all classes.
             default_map = {
                 'Guardian': 'Tank',
                 'Warrior': 'Damage',
@@ -97,31 +101,34 @@ class handler(BaseHTTPRequestHandler):  # type: ignore
                 'Sorcerer': 'Damage',
                 'Wizard': 'Control',
             }
-            if class_name and class_name in default_map:
-                archetype = default_map[class_name]
-            else:
-                archetype = 'Random'
+            archetype = default_map.get(class_name, 'Random')
         try:
-            # Create the base character; pass through the selected or inferred archetype.
-            char = create_character(level, archetype or 'Damage', class_name=class_name, subclass_name=subclass_name)
-            # Apply equipment if provided
-            apply_equipment(char, primary=primary, secondary=secondary, armour=armour)
-            # Do not expose the archetype in the output
-            try:
-                char.archetype = None  # type: ignore
-            except Exception:
-                pass
-            # Convert to JSON
+            # Build the character
+            char = create_character(level, archetype, class_name=class_name, subclass_name=subclass_name)
+            # Apply equipment if any
+            if primary or secondary or armour:
+                apply_equipment(char, primary=primary, secondary=secondary, armour=armour)
+            # Hide the archetype in the returned structure
+            char.archetype = None  # type: ignore
+            # Serialize
             data = _to_json(char)
-            payload = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
+            body = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
             self.send_header('Cache-Control', 'no-store')
+            self.send_header('Content-Length', str(len(body)))
             self.end_headers()
-            self.wfile.write(payload)
+            self.wfile.write(body)
         except Exception as exc:
-            # Return an error message in JSON
+            # On failure return error and traceback for debugging
+            import traceback
+            err = {
+                'error': str(exc),
+                'trace': traceback.format_exc(),
+            }
+            body = json.dumps(err, ensure_ascii=False, indent=2).encode('utf-8')
             self.send_response(500)
-            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
             self.end_headers()
-            self.wfile.write(json.dumps({'error': str(exc)}).encode('utf-8'))
+            self.wfile.write(body)

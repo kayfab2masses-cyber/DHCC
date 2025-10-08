@@ -211,20 +211,40 @@ class Character:
 # ---------------------------------------------------------------------------
 
 def load_domain_cards() -> List[Dict]:
-    """Load the complete domain card compendium from JSON.
-
-    Returns a list of dictionaries where each dictionary has the following
-    keys: name, domain, level, type, recall_cost, description.
     """
-    here = os.path.dirname(__file__)
-    json_path = os.path.join(here, 'domain_cards.json')
-    if not os.path.exists(json_path):
-        raise FileNotFoundError(
-            'domain_cards.json not found; ensure the JSON file extracted from the '
-            'Domain Cards PDF is placed alongside this module.')
-    with open(json_path, 'r') as f:
-        cards = json.load(f)
-    return cards
+    Load the complete domain card compendium from JSON.
+
+    The function attempts to locate ``domain_cards.json`` in a number of
+    sensible locations to support both server and client use cases.  It
+    first checks the directory of this module (the repo root when
+    packaged for deployment).  If not found, it falls back to the
+    repository root and then the ``public`` directory.  This behaviour
+    ensures that the generator does not crash if the user moves the JSON
+    into ``public/`` for browser consumption.  It will raise a
+    ``FileNotFoundError`` if the file cannot be found in any location.
+
+    Returns
+    -------
+    List[Dict]
+        A list of domain card dictionaries with fields ``name``,
+        ``domain``, ``level``, ``type``, ``recall_cost`` and
+        ``description``.
+    """
+    # Determine candidate locations for the JSON file
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(here, 'domain_cards.json'),
+        os.path.join(os.path.dirname(here), 'domain_cards.json'),
+        os.path.join(os.path.dirname(here), 'public', 'domain_cards.json'),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    # If we didn't return above, none of the paths existed
+    raise FileNotFoundError(
+        'domain_cards.json not found; expected at one of: ' + ', '.join(candidates)
+    )
 
 
 DOMAIN_CARDS = load_domain_cards()
