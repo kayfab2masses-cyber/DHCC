@@ -25,7 +25,9 @@
       </div>
       <div>
         <label for="archetype">Archetype</label>
+        <!-- Archetype is optional: the first blank option lets you omit it completely -->
         <select id="archetype">
+          <option value="">— Any —</option>
           <option>Tank</option>
           <option>Damage</option>
           <option>Sneaky</option>
@@ -56,7 +58,8 @@
       </div>
     </div>
     <p>Select equipment (optional):</p>
-    <div class="row">
+    <!-- Equipment row is hidden until a character has been generated -->
+    <div class="row" id="equipmentRow" style="display:none;">
       <div>
         <label for="primary">Primary Weapon</label>
         <select id="primary">
@@ -159,7 +162,8 @@
         // Build query parameters
         const params = new URLSearchParams();
         params.set('level', level);
-        params.set('archetype', archetype);
+        // Only include archetype if non‑empty; otherwise API will infer
+        if (archetype) params.set('archetype', archetype);
         if (cls) params.set('class', cls);
         if (sub) params.set('subclass', sub);
         if (primary) params.set('primary', primary);
@@ -170,6 +174,8 @@
           if (!res.ok) throw new Error('Server returned ' + res.status);
           const data = await res.json();
           document.querySelector('#out').textContent = JSON.stringify(data, null, 2);
+          // Reveal the equipment row after a character has been generated
+          document.getElementById('equipmentRow').style.display = 'flex';
         } catch (err) {
           document.querySelector('#out').textContent = 'Error: ' + err;
         }

@@ -8,8 +8,11 @@ applies optional equipment selections via the ``apply_equipment``
 function.  The handler accepts the following query parameters:
 
 * ``level`` – integer from 1 to 10 (default 1)
-* ``archetype`` – one of Tank, Damage, Sneaky, Support, Healer,
-  Face, Control (required)
+* ``archetype`` – optional archetype string.  Choose from ``Tank``,
+  ``Damage``, ``Sneaky``, ``Support``, ``Healer``, ``Face`` or ``Control``.
+  If omitted, the handler will attempt to infer a sensible archetype
+  based on the chosen class, or fall back to ``Damage`` if neither
+  class nor archetype is provided.
 * ``class`` – optional class name to lock in (e.g. "Druid")
 * ``subclass`` – optional subclass name to lock in (e.g. "Wayfinder")
 * ``primary`` – optional primary weapon name from the Tier 1 table
@@ -29,6 +32,7 @@ from urllib.parse import urlparse, parse_qs
 import json
 import os
 import sys
+from typing import Optional
 
 # Ensure we can import the character creator from the repository root
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -60,16 +64,41 @@ class handler(BaseHTTPRequestHandler):  # type: ignore
         primary = qs.get('primary', [None])[0]
         secondary = qs.get('secondary', [None])[0]
         armour = qs.get('armor', [None])[0]
-        # Validate required fields
-        if not archetype:
-            self.send_response(400)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({'error': 'archetype parameter is required'}).encode('utf-8'))
-            return
+        # Normalise blank or placeholder selections
+        def normalize(val: str | None) -> Optional[str]:
+            if not val:
+                return None
+            # Remove leading/trailing whitespace
+            v = str(val).strip()
+            # ignore fancy "— None —" labels or dashes
+            if v.startswith('—') or v.lower().startswith('none'):
+                return None
+            return v
+        archetype = normalize(archetype)
+        class_name = normalize(class_name)
+        subclass_name = normalize(subclass_name)
+        primary = normalize(primary)
+        secondary = normalize(secondary)
+        armour = normalize(armour)
+        # Determine archetype if not provided by looking at the class
+        if archetype is None:
+            # Map classes to archetype defaults; these weights follow the SRD archetype matrix
+            default_map = {
+                'Guardian': 'Tank',
+                'Warrior': 'Damage',
+                'Rogue': 'Sneaky',
+                'Ranger': 'Sneaky',
+                'Druid': 'Support',
+                'Bard': 'Face',
+                'Seraph': 'Support',
+                'Sorcerer': 'Damage',
+                'Wizard': 'Control',
+            }
+            if class_name and class_name in default_map:
+                archetype = default_map[class_name]
         try:
-            # Create the base character
-            char = create_character(level, archetype, class_name=class_name, subclass_name=subclass_name)
+            # Create the base character; if archetype is still None, default to "Damage" for balance
+            char = create_character(level, archetype or 'Damage', class_name=class_name, subclass_name=subclass_name)
             # Apply equipment if provided
             apply_equipment(char, primary=primary, secondary=secondary, armour=armour)
             # Convert to JSON
@@ -81,6 +110,7 @@ class handler(BaseHTTPRequestHandler):  # type: ignore
             self.end_headers()
             self.wfile.write(payload)
         except Exception as exc:
+            # Return an error message in JSON
             self.send_response(500)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
